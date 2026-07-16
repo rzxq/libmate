@@ -11,7 +11,7 @@ from states import AddBook, CheckBook
 
 router = Router()
 
-# Временное хранилищ найденных вариантов книг на время выбора пользователем
+# Временное хранили найденных вариантов книг на время выбора пользователем
 _search_cache: dict[int, list[services.BookInfo]] = {}
 
 
