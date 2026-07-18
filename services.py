@@ -1,11 +1,9 @@
 """
 Внешние источники данных о книгах.
 
-1) Google Books API — бесплатный, для первичного поиска (название, автор,
-   обложка, описание).
+1) Google Books API — бесплатный, для первичного поиска.
 
-2) Groq API (Mixtral) — бесплатно. Используем для определения цикла/серии,
-   рейтинга, доступности и покупки.
+2) Hugging Face Inference API (Mistral 7B) — бесплатно, без карты.
 """
 from __future__ import annotations
 
@@ -16,15 +14,14 @@ from typing import Optional
 
 import httpx
 
-from config import GROQ_API_KEY, GOOGLE_BOOKS_API_KEY
+from config import HF_TOKEN, GOOGLE_BOOKS_API_KEY
 
 logger = logging.getLogger(__name__)
 
 GOOGLE_BOOKS_URL = "https://www.googleapis.com/books/v1/volumes"
 GOOGLE_BOOKS_MAX_RESULTS = 20
 
-GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL = "mixtral-8x7b-32768"
+HF_API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3/v1/chat/completions"
 
 
 @dataclass
@@ -126,16 +123,16 @@ def _parse_volume(item: dict) -> BookInfo:
     return BookInfo(title=title, author=authors, cover_url=cover, description=description)
 
 
-async def _groq_request(system_prompt: str, user_prompt: str, max_tokens: int = 1200) -> tuple[Optional[str], Optional[str]]:
-    if not GROQ_API_KEY:
-        return None, "GROQ_API_KEY не задан в переменных окружения"
+async def _hf_request(system_prompt: str, user_prompt: str, max_tokens: int = 1200) -> tuple[Optional[str], Optional[str]]:
+    if not HF_TOKEN:
+        return None, "HF_TOKEN не задан"
 
     headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Authorization": f"Bearer {HF_TOKEN}",
         "Content-Type": "application/json",
     }
     body = {
-        "model": GROQ_MODEL,
+        "model": "mistralai/Mistral-7B-Instruct-v0.3",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -145,25 +142,21 @@ async def _groq_request(system_prompt: str, user_prompt: str, max_tokens: int = 
     }
 
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(GROQ_API_URL, headers=headers, json=body)
-            if resp.status_code == 401:
-                return None, "Groq: неверный API ключ"
-            if resp.status_code == 403:
-                return None, "Groq: доступ заблокирован (возможно, регион)"
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(HF_API_URL, headers=headers, json=body)
             if resp.status_code >= 400:
                 try:
                     detail = resp.json()
                 except Exception:
                     detail = resp.text
-                return None, f"Groq {resp.status_code}: {detail}"
+                return None, f"HF {resp.status_code}: {detail}"
             resp.raise_for_status()
             data = resp.json()
             content = data["choices"][0]["message"]["content"]
             return content, None
     except Exception as e:
-        logger.exception("Groq API ошибка")
-        return None, f"Groq ошибка: {e}"
+        logger.exception("HF API ошибка")
+        return None, f"HF ошибка: {e}"
 
 
 async def search_book(query: str, prefer_russian: bool = True) -> list[BookInfo]:
@@ -192,9 +185,9 @@ async def ai_find_book(query: str) -> Optional[BookInfo]:
     )
     user_prompt = f"Найди книгу: {query}"
 
-    raw, error = await _groq_request(system_prompt, user_prompt, max_tokens=500)
+    raw, error = await _hf_request(system_prompt, user_prompt, max_tokens=500)
     if error:
-        logger.warning("Groq в ai_find_book: %s", error)
+        logger.warning("HF в ai_find_book: %s", error)
         return None
     if not raw:
         return None
@@ -203,7 +196,7 @@ async def ai_find_book(query: str) -> Optional[BookInfo]:
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
-        logger.warning("Не разобрал JSON от Groq: %r", raw)
+        logger.warning("Не разобрал JSON от HF: %r", raw)
         return None
 
     if not parsed.get("found"):
@@ -239,17 +232,17 @@ async def check_book_context(title: str, author: str) -> BookContext:
     )
     user_prompt = f'Книга: "{title}". Автор: {author}.'
 
-    raw, error = await _groq_request(system_prompt, user_prompt, max_tokens=1200)
+    raw, error = await _hf_request(system_prompt, user_prompt, max_tokens=1200)
     if error:
         return BookContext(market_note=error)
     if not raw:
-        return BookContext(market_note="Не удалось получить ответ от Groq")
+        return BookContext(market_note="Не удалось получить ответ от Hugging Face")
 
     raw = raw.strip().replace("```json", "").replace("```", "").strip()
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
-        logger.warning("Не разобрал JSON от Groq: %r", raw)
+        logger.warning("Не разобрал JSON от HF: %r", raw)
         return BookContext(market_note="Не удалось разобрать ответ ИИ")
 
     return BookContext(
