@@ -1,4 +1,3 @@
-from types import SimpleNamespace
 from typing import Optional
 
 from aiogram import F, Router
@@ -38,15 +37,6 @@ async def _get_context(title: str, author: str) -> services.BookContext:
     return context
 
 
-def _merge_book(base: services.BookInfo, context: Optional[services.BookContext]) -> SimpleNamespace:
-    return SimpleNamespace(
-        title=base.title,
-        author=base.author,
-        description=base.description,
-        cover_url=base.cover_url,
-    )
-
-
 def _list_text(items, page: int, header: str) -> str:
     start = page * PAGE_SIZE
     chunk = items[start:start + PAGE_SIZE]
@@ -57,9 +47,6 @@ def _list_text(items, page: int, header: str) -> str:
 
 def _book_card_text(b) -> str:
     lines = []
-    cover_url = getattr(b, "cover_url", None)
-    if cover_url:
-        lines.append(f'<a href="{cover_url}">&#8205;</a>')
     lines.append(f"📖 <b>{b.title}</b>")
     lines.append(f"👤 {b.author}")
 
@@ -69,6 +56,22 @@ def _book_card_text(b) -> str:
         lines.append(f"\n📝 {short}")
 
     return "\n".join(lines)
+
+
+async def _send_with_cover(bot, chat_id: int, text: str, cover_url: Optional[str] = None, reply_markup=None) -> list[Message]:
+    msgs = []
+    if cover_url:
+        try:
+            if len(text) <= 1024:
+                msgs.append(await bot.send_photo(chat_id, photo=cover_url, caption=text, reply_markup=reply_markup))
+            else:
+                msgs.append(await bot.send_photo(chat_id, photo=cover_url))
+                msgs.append(await bot.send_message(chat_id, text, reply_markup=reply_markup))
+        except Exception:
+            msgs.append(await bot.send_message(chat_id, text, reply_markup=reply_markup))
+    else:
+        msgs.append(await bot.send_message(chat_id, text, reply_markup=reply_markup))
+    return msgs
 
 
 @router.message(Command("start"))
@@ -127,8 +130,6 @@ async def add_book_query(message: Message, state: FSMContext) -> None:
 
 
 async def _finalize_add_book(bot, chat_id: int, user: db.User, chosen: services.BookInfo) -> Message:
-    context = await _get_context(chosen.title, chosen.author)
-
     book = await db.add_book(
         user_id=user.id,
         title=chosen.title,
@@ -137,13 +138,11 @@ async def _finalize_add_book(bot, chat_id: int, user: db.User, chosen: services.
         description=chosen.description,
     )
 
-    cover_url = getattr(book, "cover_url", None)
-    cover_html = f'<a href="{cover_url}">&#8205;</a>' if cover_url else ""
-    text = f"{cover_html}✅ Нашёл и добавил: «{book.title}» — {book.author}"
-
-    sent = await bot.send_message(chat_id, text, reply_markup=library_card_kb(book.id))
-    track(chat_id, sent.message_id)
-    return sent
+    text = f"✅ Нашёл и добавил: «{book.title}» — {book.author}"
+    msgs = await _send_with_cover(bot, chat_id, text, book.cover_url, reply_markup=library_card_kb(book.id))
+    for m in msgs:
+        track(chat_id, m.message_id)
+    return msgs[-1]
 
 
 @router.callback_query(AddBook.waiting_choice, F.data.startswith("addpick:"))
@@ -185,8 +184,11 @@ async def addpick_cb(callback: CallbackQuery, state: FSMContext) -> None:
             await callback.message.edit_text("Что-то пошло не так, попробуй ещё раз.")
             return
         chosen = results[idx]
-        merged = _merge_book(chosen, None)
-        await callback.message.edit_text(_book_card_text(merged), reply_markup=search_card_kb(idx, "addpick"))
+        text = _book_card_text(chosen)
+        await callback.message.delete()
+        msgs = await _send_with_cover(callback.bot, callback.message.chat.id, text, chosen.cover_url, reply_markup=search_card_kb(idx, "addpick"))
+        for m in msgs:
+            track(callback.message.chat.id, m.message_id)
         return
 
     if action == "add":
@@ -242,12 +244,10 @@ async def check_book_query(message: Message, state: FSMContext) -> None:
 
     chosen = results[0]
 
-    cover_url = getattr(chosen, "cover_url", None)
-    cover_html = f'<a href="{cover_url}">&#8205;</a>' if cover_url else ""
-    text = f"{cover_html}❌ У тебя её нет: «{chosen.title}» — {chosen.author}"
-
-    sent = await message.answer(text)
-    track(message.chat.id, sent.message_id)
+    text = f"❌ У тебя её нет: «{chosen.title}» — {chosen.author}"
+    msgs = await _send_with_cover(message.bot, message.chat.id, text, chosen.cover_url)
+    for m in msgs:
+        track(message.chat.id, m.message_id)
 
 
 @router.message(F.text == "📚 Моя библиотека")
@@ -324,10 +324,11 @@ async def lib_cb(callback: CallbackQuery) -> None:
             return
         book = books[idx]
         star = "⭐ В избранном\n\n" if book.is_favorite else ""
-        await callback.message.edit_text(
-            star + _book_card_text(book),
-            reply_markup=library_card_kb(book.id),
-        )
+        text = star + _book_card_text(book)
+        await callback.message.delete()
+        msgs = await _send_with_cover(callback.bot, callback.message.chat.id, text, book.cover_url, reply_markup=library_card_kb(book.id))
+        for m in msgs:
+            track(callback.message.chat.id, m.message_id)
         return
 
 
@@ -338,11 +339,12 @@ async def toggle_fav(callback: CallbackQuery) -> None:
     await callback.answer("Готово ⭐" if book and book.is_favorite else "Убрано из избранного")
     if book:
         star = "⭐ В избранном\n\n" if book.is_favorite else ""
+        text = star + _book_card_text(book)
         try:
-            await callback.message.edit_text(
-                star + _book_card_text(book),
-                reply_markup=library_card_kb(book.id),
-            )
+            await callback.message.delete()
+            msgs = await _send_with_cover(callback.bot, callback.message.chat.id, text, book.cover_url, reply_markup=library_card_kb(book.id))
+            for m in msgs:
+                track(callback.message.chat.id, m.message_id)
         except Exception:
             pass
 
