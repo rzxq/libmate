@@ -21,25 +21,10 @@ from states import AddBook, CheckBook
 
 router = Router()
 
-# Временное хранилище результатов поиска и текущей страницы, на время выбора
-# пользователем. Формат: {tg_id: {"results": [...], "page": 0}}
 _search_cache: dict[int, dict] = {}
-
-# То же самое для списка книг библиотеки/избранного, чтобы постранично
-# листать без повторных походов в БД на каждый клик.
-# Формат: {tg_id: {"books": [...], "page": 0, "header": "..."}}
 _library_cache: dict[int, dict] = {}
-
-# Кэш результатов ИИ-проверки (цикл + рейтинг + доступность + покупка) на
-# время работы процесса — чтобы если пользователь сначала открыл карточку
-# книги в поиске (show), а потом нажал "Добавить", не делать два одинаковых
-# запроса к Claude подряд. Ключ: "название|автор" в нижнем регистре.
 _context_cache: dict[str, services.BookContext] = {}
 
-# Фильтр: сообщение НЕ является нажатием кнопки главного меню.
-# Вешаем его на все "жду свободный текст" хендлеры, чтобы кнопка меню
-# никогда не воспринималась как ответ на вопрос — даже если бот почему-то
-# застрял в старом состоянии.
 NOT_MENU_BUTTON = ~F.text.in_(MENU_TEXTS)
 
 
@@ -54,12 +39,11 @@ async def _get_context(title: str, author: str) -> services.BookContext:
 
 
 def _merge_book(base: services.BookInfo, context: Optional[services.BookContext]) -> SimpleNamespace:
-    """Склеивает библиографию из Google Books (base) с данными ИИ-проверки
-    (context: цикл, рейтинг, доступность, покупка). Данные ИИ в приоритете."""
     return SimpleNamespace(
         title=base.title,
         author=base.author,
         description=base.description,
+        cover_url=base.cover_url,
         series_name=context.series_name if context else None,
         series_part=context.part_number if context else None,
         series_total=context.total_parts if context else None,
@@ -74,7 +58,6 @@ def _merge_book(base: services.BookInfo, context: Optional[services.BookContext]
 
 
 def _list_text(items, page: int, header: str) -> str:
-    """Текст страницы списка: заголовок + пронумерованные строки + номер страницы."""
     start = page * PAGE_SIZE
     chunk = items[start:start + PAGE_SIZE]
     lines = [f"{start + i + 1}. {it.title} — {it.author}" for i, it in enumerate(chunk)]
@@ -82,10 +65,19 @@ def _list_text(items, page: int, header: str) -> str:
     return f"{header}\n\n" + "\n".join(lines) + f"\n\nСтраница {page + 1} из {total_pages}."
 
 
+def _cover_trigger(cover_url: Optional[str]) -> str:
+    if not cover_url:
+        return ""
+    return f'<a href="{cover_url}">&#8205;</a>'
+
+
 def _book_card_text(b, note: Optional[str] = None) -> str:
-    """Полная карточка книги: описание, рейтинг, доступность, покупка.
-    Работает с db.Book и с объектом от _merge_book — у обоих есть нужные атрибуты."""
-    lines = [f"📖 <b>{b.title}</b>", f"👤 {b.author}"]
+    lines = []
+    cover_url = getattr(b, "cover_url", None)
+    if cover_url:
+        lines.append(f'<a href="{cover_url}">&#8205;</a>')
+    lines.append(f"📖 <b>{b.title}</b>")
+    lines.append(f"👤 {b.author}")
 
     series_name = getattr(b, "series_name", None)
     if series_name:
@@ -117,16 +109,12 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     await db.get_or_create_user(message.from_user.id, message.from_user.username)
     await message.answer(
         "Привет! Я помогу тебе не покупать одну и ту же книгу дважды 📚\n\n"
-        "— «➕ Добавить книгу» — заношу книгу в твою библиотеку, проверяю "
-        "цикл/серию, смотрю рейтинг (LiveLib), доступность в электронном "
-        "виде/аудио и можно ли её купить (Wildberries, Ozon, ЛитРес и т.п.).\n"
+        "— «➕ Добавить книгу» — заношу книгу в твою библиотеку.\n"
         "— «🔎 Проверить книгу» — узнать, есть ли она уже у тебя, прежде чем покупать.\n"
         "— «📚 Моя библиотека» / «⭐ Избранное» / «🗂 Коллекции» / «✍️ Заметки об авторах».",
         reply_markup=MAIN_MENU,
     )
 
-
-# ---------- Добавление книги ----------
 
 @router.message(F.text == "➕ Добавить книгу")
 @router.message(Command("add"))
@@ -151,16 +139,12 @@ async def add_book_query(message: Message, state: FSMContext) -> None:
             "«Аленький цветочек, Аксаков»."
         )
         track(message.chat.id, sent.message_id)
-        # Важно: сбрасываем состояние, иначе бот навсегда "застрянет" в режиме
-        # ожидания названия книги и будет перехватывать вообще все сообщения,
-        # включая нажатия кнопок меню.
         await state.clear()
         return
 
     user = await db.get_or_create_user(message.from_user.id, message.from_user.username)
 
     if len(results) == 1:
-        # Один явный вариант — не мучаем пользователя выбором, добавляем сразу.
         await state.clear()
         await _finalize_add_book(message.bot, message.chat.id, user, results[0])
         return
@@ -174,8 +158,6 @@ async def add_book_query(message: Message, state: FSMContext) -> None:
 
 
 async def _finalize_add_book(bot, chat_id: int, user: db.User, chosen: services.BookInfo) -> Message:
-    """Общая логика подтверждения и сохранения книги — используется и при
-    единственном найденном варианте (авто), и при ручном выборе из списка."""
     context = await _get_context(chosen.title, chosen.author)
 
     book = await db.add_book(
@@ -184,42 +166,13 @@ async def _finalize_add_book(bot, chat_id: int, user: db.User, chosen: services.
         author=chosen.author,
         cover_url=chosen.cover_url,
         description=chosen.description,
-        series_name=context.series_name,
-        series_part=context.part_number,
-        series_total=context.total_parts,
-        average_rating=context.average_rating,
-        ratings_count=context.ratings_count,
-        is_ebook=context.is_ebook,
-        is_audiobook=context.is_audiobook,
-        for_sale=context.for_sale,
-        marketplaces=context.marketplaces,
-        buy_link=context.buy_link,
     )
 
-    text = f"✅ Нашёл и добавил: «{book.title}» — {book.author}\n"
-    if context.is_series and context.series_name:
-        text += f"\n📖 Это часть цикла «{context.series_name}»"
-        if context.part_number and context.total_parts:
-            text += f", часть {context.part_number} из {context.total_parts}."
-            owned = await db.get_series_books(user.id, context.series_name)
-            owned_parts = sorted(b.series_part for b in owned if b.series_part)
-            missing = [p for p in range(1, context.total_parts + 1) if p not in owned_parts]
-            if missing:
-                text += f"\n⚠️ У тебя пока нет частей: {', '.join(map(str, missing))}."
-        elif context.part_number:
-            text += f", часть {context.part_number}."
-        else:
-            text += "."
-    else:
-        text += "\nПохоже, отдельная книга, не часть цикла."
-    if context.series_note:
-        text += f"\n\nℹ️ {context.series_note}"
-
-    text += "\n\n" + services.format_rating(book.average_rating, book.ratings_count)
+    cover_html = _cover_trigger(book.cover_url)
+    text = f"{cover_html}✅ Нашёл и добавил: «{book.title}» — {book.author}\n"
+    text += "\n" + services.format_rating(book.average_rating, book.ratings_count)
     text += "\n" + services.format_availability(book)
     text += "\n" + services.format_purchase(book)
-    if context.market_note:
-        text += f"\n\nℹ️ {context.market_note}"
 
     sent = await bot.send_message(chat_id, text, reply_markup=library_card_kb(book.id, buy_link=book.buy_link))
     track(chat_id, sent.message_id)
@@ -265,7 +218,7 @@ async def addpick_cb(callback: CallbackQuery, state: FSMContext) -> None:
             await callback.message.edit_text("Что-то пошло не так, попробуй ещё раз.")
             return
         chosen = results[idx]
-        await callback.message.edit_text(f"«{chosen.title}» — смотрю рейтинг и наличие в продаже… ⏳")
+        await callback.message.edit_text("«{chosen.title}» — проверяю информацию… ⏳")
         context = await _get_context(chosen.title, chosen.author)
         merged = _merge_book(chosen, context)
         note = context.market_note or context.series_note
@@ -285,8 +238,6 @@ async def addpick_cb(callback: CallbackQuery, state: FSMContext) -> None:
         _search_cache.pop(user_id, None)
         return
 
-
-# ---------- Проверка "есть ли у меня книга" ----------
 
 @router.message(F.text == "🔎 Проверить книгу")
 @router.message(Command("check"))
@@ -327,31 +278,18 @@ async def check_book_query(message: Message, state: FSMContext) -> None:
 
     chosen = results[0]
     context = await _get_context(chosen.title, chosen.author)
-    merged = _merge_book(chosen, context)
 
-    text = f"❌ У тебя её нет: «{chosen.title}» — {chosen.author}\n"
-    if context.is_series and context.series_name:
-        text += f"\n📖 Входит в цикл «{context.series_name}»"
-        if context.part_number and context.total_parts:
-            text += f", часть {context.part_number} из {context.total_parts}."
-        elif context.part_number:
-            text += f", часть {context.part_number}."
-        else:
-            text += "."
-    if context.series_note:
-        text += f"\n\nℹ️ {context.series_note}"
-
-    text += "\n\n" + services.format_rating(merged.average_rating, merged.ratings_count)
-    text += "\n" + services.format_availability(merged)
-    text += "\n" + services.format_purchase(merged)
+    cover_html = _cover_trigger(chosen.cover_url)
+    text = f"{cover_html}❌ У тебя её нет: «{chosen.title}» — {chosen.author}\n"
+    text += "\n" + services.format_rating(context.average_rating, context.ratings_count)
+    text += "\n" + services.format_availability(context)
+    text += "\n" + services.format_purchase(context)
     if context.market_note:
         text += f"\n\nℹ️ {context.market_note}"
 
     sent = await message.answer(text)
     track(message.chat.id, sent.message_id)
 
-
-# ---------- Библиотека и избранное ----------
 
 @router.message(F.text == "📚 Моя библиотека")
 @router.message(Command("library"))
