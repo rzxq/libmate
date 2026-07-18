@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 DATABASE_PATH = os.getenv("DATABASE_PATH", "bookbot.db")
 
 # Google Books работает и без ключа, но анонимные запросы с общих IP
