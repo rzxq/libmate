@@ -53,16 +53,23 @@ async def _google_books_request(query: str, lang_restrict: Optional[str]) -> lis
         return []
 
 
+def _get_best_cover(images: dict) -> Optional[str]:
+    sizes = ["extraLarge", "large", "medium", "small", "thumbnail"]
+    for size in sizes:
+        url = images.get(size) or images.get(size.lower())
+        if url:
+            return url.replace("http://", "https://")
+    if images.get("smallThumbnail"):
+        url = images["smallThumbnail"].replace("http://", "https://")
+        return url.replace("zoom=5", "zoom=6")
+    return None
+
+
 def _parse_volume(item: dict) -> BookInfo:
     info = item.get("volumeInfo", {})
     title = info.get("title", "Без названия")
     authors = ", ".join(info.get("authors", ["Неизвестен"]))
-
-    images = info.get("imageLinks", {})
-    cover = images.get("medium") or images.get("small") or images.get("thumbnail") or images.get("smallThumbnail")
-    if cover:
-        cover = cover.replace("http://", "https://")
-
+    cover = _get_best_cover(info.get("imageLinks", {}))
     description = info.get("description")
     return BookInfo(title=title, author=authors, cover_url=cover, description=description)
 
