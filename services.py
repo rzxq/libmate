@@ -1,27 +1,23 @@
 """
 Внешние источники данных о книгах.
 
-1) Google Books API — бесплатный, для первичного поиска.
-
-2) Hugging Face Inference API (Mistral 7B) — бесплатно, без карты.
+Используем ТОЛЬКО Google Books API — бесплатно, без ключа.
+Google Books даёт: название, автор, обложка, описание.
 """
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
 from typing import Optional
 
 import httpx
 
-from config import HF_TOKEN, GOOGLE_BOOKS_API_KEY
+from config import GOOGLE_BOOKS_API_KEY
 
 logger = logging.getLogger(__name__)
 
 GOOGLE_BOOKS_URL = "https://www.googleapis.com/books/v1/volumes"
 GOOGLE_BOOKS_MAX_RESULTS = 20
-
-HF_API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.3/v1/chat/completions"
 
 
 @dataclass
@@ -39,59 +35,26 @@ class BookContext:
     part_number: Optional[int] = None
     total_parts: Optional[int] = None
     series_note: Optional[str] = None
-
     average_rating: Optional[float] = None
     ratings_count: Optional[int] = None
-
     is_ebook: Optional[bool] = None
     is_audiobook: Optional[bool] = None
-
     for_sale: Optional[bool] = None
     marketplaces: Optional[str] = None
     buy_link: Optional[str] = None
-
     market_note: Optional[str] = None
 
 
 def format_rating(rating: Optional[float], count: Optional[int] = None) -> str:
-    if not rating:
-        return "⭐ Рейтинг: нет данных"
-    full = max(0, min(5, round(rating)))
-    stars = "⭐" * full + "☆" * (5 - full)
-    tail = f" ({count} оценок)" if count else ""
-    return f"{stars} {rating:.1f} из 5{tail}"
+    return "⭐ Рейтинг: нет данных"
 
 
 def format_availability(info) -> str:
-    is_ebook = getattr(info, "is_ebook", None)
-    is_audio = getattr(info, "is_audiobook", None)
-
-    if is_ebook is None and is_audio is None:
-        return "📱 Доступность: нет данных"
-
-    formats = []
-    if is_ebook:
-        formats.append("электронная (fb2/epub/pdf)")
-    if is_audio:
-        formats.append("аудиокнига")
-
-    if not formats:
-        return "📱 Доступность: похоже, есть только бумажная версия"
-    return "📱 Доступность: " + ", ".join(formats)
+    return "📱 Доступность: проверяй через маркетплейсы (Wildberries, Ozon, ЛитРес)"
 
 
 def format_purchase(info) -> str:
-    for_sale = getattr(info, "for_sale", None)
-    marketplaces = getattr(info, "marketplaces", None)
-    buy_link = getattr(info, "buy_link", None)
-
-    if for_sale and marketplaces:
-        return f"🛒 Покупка: можно купить — {marketplaces}"
-    if for_sale and buy_link:
-        return "🛒 Покупка: можно купить (ссылка ниже)"
-    if for_sale is False:
-        return "🛒 Покупка: сейчас нигде не продаётся (возможно, распродан тираж)"
-    return "🛒 Покупка: нет данных"
+    return "🛒 Покупка: проверяй на Wildberries, Ozon, ЛитРес"
 
 
 async def _google_books_request(query: str, lang_restrict: Optional[str]) -> list[dict]:
@@ -123,140 +86,12 @@ def _parse_volume(item: dict) -> BookInfo:
     return BookInfo(title=title, author=authors, cover_url=cover, description=description)
 
 
-async def _hf_request(system_prompt: str, user_prompt: str, max_tokens: int = 1200) -> tuple[Optional[str], Optional[str]]:
-    if not HF_TOKEN:
-        return None, "HF_TOKEN не задан"
-
-    headers = {
-        "Authorization": f"Bearer {HF_TOKEN}",
-        "Content-Type": "application/json",
-    }
-    body = {
-        "model": "mistralai/Mistral-7B-Instruct-v0.3",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "max_tokens": max_tokens,
-        "temperature": 0.3,
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(HF_API_URL, headers=headers, json=body)
-            if resp.status_code >= 400:
-                try:
-                    detail = resp.json()
-                except Exception:
-                    detail = resp.text
-                return None, f"HF {resp.status_code}: {detail}"
-            resp.raise_for_status()
-            data = resp.json()
-            content = data["choices"][0]["message"]["content"]
-            return content, None
-    except Exception as e:
-        logger.exception("HF API ошибка")
-        return None, f"HF ошибка: {e}"
-
-
 async def search_book(query: str, prefer_russian: bool = True) -> list[BookInfo]:
     items = await _google_books_request(query, "ru" if prefer_russian else None)
     if not items and prefer_russian:
         items = await _google_books_request(query, None)
-
-    if not items:
-        try:
-            ai_result = await ai_find_book(query)
-        except Exception:
-            logger.exception("ИИ поиск книги упал для запроса %r", query)
-            ai_result = None
-        return [ai_result] if ai_result else []
-
     return [_parse_volume(item) for item in items]
 
 
-async def ai_find_book(query: str) -> Optional[BookInfo]:
-    system_prompt = (
-        "Ты помогаешь найти точные библиографические данные книги "
-        "для русскоязычного читателя. Отвечай ТОЛЬКО валидным JSON без "
-        "markdown, в формате: "
-        '{"found": true/false, "title": "строка", "author": "строка", '
-        '"description": "1-2 предложения на русском или null"}'
-    )
-    user_prompt = f"Найди книгу: {query}"
-
-    raw, error = await _hf_request(system_prompt, user_prompt, max_tokens=500)
-    if error:
-        logger.warning("HF в ai_find_book: %s", error)
-        return None
-    if not raw:
-        return None
-
-    raw = raw.strip().replace("```json", "").replace("```", "").strip()
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.warning("Не разобрал JSON от HF: %r", raw)
-        return None
-
-    if not parsed.get("found"):
-        return None
-
-    return BookInfo(
-        title=parsed.get("title", query),
-        author=parsed.get("author", "Неизвестен"),
-        description=parsed.get("description"),
-    )
-
-
 async def check_book_context(title: str, author: str) -> BookContext:
-    system_prompt = (
-        "Ты помогаешь русскоязычному читателю разобраться с книгой. "
-        "Для рейтинга и отзывов используй LiveLib (у него "
-        "своя 5-звёздочная шкала оценок) и Fantlab. "
-        "Для форматов и покупки — Wildberries, Ozon, Litres (ЛитРес), "
-        "MyBook, Bookmate, «Читай-город», «Лабиринт». НЕ используй Google "
-        "Books как источник рейтинга или покупки. Отвечай ТОЛЬКО валидным "
-        "JSON без markdown-разметки и пояснений, строго в формате:\n"
-        '{"is_series": true/false, "series_name": "строка или null", '
-        '"part_number": число или null, "total_parts": число или null, '
-        '"series_note": "строка или null", '
-        '"average_rating": число от 0 до 5 или null, '
-        '"ratings_count": число или null, '
-        '"is_ebook": true/false/null, '
-        '"is_audiobook": true/false/null, '
-        '"for_sale": true/false/null, '
-        '"marketplaces": "площадки через запятую, например \'Wildberries, Озон, ЛитРес\', или null", '
-        '"buy_link": "прямая ссылка на карточку товара или null", '
-        '"market_note": "короткая заметка на русском (например про цену или доступность) или null"}'
-    )
-    user_prompt = f'Книга: "{title}". Автор: {author}.'
-
-    raw, error = await _hf_request(system_prompt, user_prompt, max_tokens=1200)
-    if error:
-        return BookContext(market_note=error)
-    if not raw:
-        return BookContext(market_note="Не удалось получить ответ от Hugging Face")
-
-    raw = raw.strip().replace("```json", "").replace("```", "").strip()
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.warning("Не разобрал JSON от HF: %r", raw)
-        return BookContext(market_note="Не удалось разобрать ответ ИИ")
-
-    return BookContext(
-        is_series=bool(parsed.get("is_series")),
-        series_name=parsed.get("series_name"),
-        part_number=parsed.get("part_number"),
-        total_parts=parsed.get("total_parts"),
-        series_note=parsed.get("series_note"),
-        average_rating=parsed.get("average_rating"),
-        ratings_count=parsed.get("ratings_count"),
-        is_ebook=parsed.get("is_ebook"),
-        is_audiobook=parsed.get("is_audiobook"),
-        for_sale=parsed.get("for_sale"),
-        marketplaces=parsed.get("marketplaces"),
-        buy_link=parsed.get("buy_link"),
-        market_note=parsed.get("market_note"),
-    )
+    return BookContext()
