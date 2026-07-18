@@ -17,6 +17,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    func,
     select,
     or_,
 )
@@ -77,10 +78,6 @@ class Book(Base):
     series_part: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     series_total: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
-    # --- Рейтинг, доступность и возможность покупки ---
-    # Источник этих данных — не Google Books (для русскоязычной аудитории
-    # он бесполезен), а ИИ с веб-поиском по LiveLib/Wildberries/Ozon/Литрес
-    # и т.п., см. services.check_book_context().
     average_rating: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     ratings_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     is_ebook: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
@@ -102,7 +99,7 @@ class AuthorNote(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     author_name: Mapped[str] = mapped_column(String(500))
-    sentiment: Mapped[str] = mapped_column(String(20))  # "like" | "dislike" | "neutral"
+    sentiment: Mapped[str] = mapped_column(String(20))
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     owner: Mapped[User] = relationship(back_populates="author_notes")
@@ -174,15 +171,14 @@ async def add_book(
 
 
 async def find_books_by_title(user_id: int, query: str) -> Sequence[Book]:
-    """Ищет книги пользователя по подстроке в названии или авторе (без учёта регистра)."""
-    like = f"%{query.lower()}%"
+    like = f"%{query}%"
     async with async_session() as session:
         result = await session.execute(
             select(Book).where(
                 Book.user_id == user_id,
                 or_(
-                    Book.title.ilike(like) if hasattr(Book.title, "ilike") else Book.title.like(like),
-                    Book.author.ilike(like) if hasattr(Book.author, "ilike") else Book.author.like(like),
+                    func.lower(Book.title).like(func.lower(like)),
+                    func.lower(Book.author).like(func.lower(like)),
                 ),
             )
         )
@@ -193,7 +189,7 @@ async def get_library(user_id: int, only_favorites: bool = False) -> Sequence[Bo
     async with async_session() as session:
         stmt = select(Book).where(Book.user_id == user_id).order_by(Book.added_at.desc())
         if only_favorites:
-            stmt = stmt.where(Book.is_favorite == True)  # noqa: E712
+            stmt = stmt.where(Book.is_favorite == True)
         result = await session.execute(stmt)
         return result.scalars().all()
 
