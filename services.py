@@ -41,7 +41,7 @@ GOOGLE_BOOKS_MAX_RESULTS = 20
 # ВАЖНО: используем актуальное имя модели. Проверить актуальный список
 # моделей можно в доке Anthropic — если модель переименуют, поменяй строку
 # здесь и в check_book_context ниже.
-CLAUDE_MODEL = "claude-3-5-sonnet-latest"
+CLAUDE_MODEL = "claude-3-5-haiku-latest"
 
 
 @dataclass
