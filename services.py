@@ -4,8 +4,8 @@
 1) Google Books API — бесплатный, для первичного поиска (название, автор,
    обложка, описание).
 
-2) Groq API (Llama 3) — бесплатно, 14400 запросов/день. Используем для
-   определения цикла/серии, рейтинга, доступности и покупки.
+2) Groq API (Mixtral) — бесплатно. Используем для определения цикла/серии,
+   рейтинга, доступности и покупки.
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ GOOGLE_BOOKS_URL = "https://www.googleapis.com/books/v1/volumes"
 GOOGLE_BOOKS_MAX_RESULTS = 20
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL = "llama3-70b-8192"
+GROQ_MODEL = "mixtral-8x7b-32768"
 
 
 @dataclass
