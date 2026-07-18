@@ -1,7 +1,7 @@
 """
 Внешние источники данных о книгах.
 
-Используем ТОЛЬКО Google Books API — бесплатно, без ключа.
+Используем ТОЛЬКО Google Books API — бесплатно.
 Google Books даёт: название, автор, обложка, описание.
 """
 from __future__ import annotations
@@ -30,31 +30,7 @@ class BookInfo:
 
 @dataclass
 class BookContext:
-    is_series: bool = False
-    series_name: Optional[str] = None
-    part_number: Optional[int] = None
-    total_parts: Optional[int] = None
-    series_note: Optional[str] = None
-    average_rating: Optional[float] = None
-    ratings_count: Optional[int] = None
-    is_ebook: Optional[bool] = None
-    is_audiobook: Optional[bool] = None
-    for_sale: Optional[bool] = None
-    marketplaces: Optional[str] = None
-    buy_link: Optional[str] = None
-    market_note: Optional[str] = None
-
-
-def format_rating(rating: Optional[float], count: Optional[int] = None) -> str:
-    return "⭐ Рейтинг: нет данных"
-
-
-def format_availability(info) -> str:
-    return "📱 Доступность: проверяй через маркетплейсы (Wildberries, Ozon, ЛитРес)"
-
-
-def format_purchase(info) -> str:
-    return "🛒 Покупка: проверяй на Wildberries, Ozon, ЛитРес"
+    pass
 
 
 async def _google_books_request(query: str, lang_restrict: Optional[str]) -> list[dict]:
