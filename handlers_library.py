@@ -44,16 +44,6 @@ def _merge_book(base: services.BookInfo, context: Optional[services.BookContext]
         author=base.author,
         description=base.description,
         cover_url=base.cover_url,
-        series_name=context.series_name if context else None,
-        series_part=context.part_number if context else None,
-        series_total=context.total_parts if context else None,
-        average_rating=context.average_rating if context else None,
-        ratings_count=context.ratings_count if context else None,
-        is_ebook=context.is_ebook if context else None,
-        is_audiobook=context.is_audiobook if context else None,
-        for_sale=context.for_sale if context else None,
-        marketplaces=context.marketplaces if context else None,
-        buy_link=context.buy_link if context else None,
     )
 
 
@@ -65,13 +55,7 @@ def _list_text(items, page: int, header: str) -> str:
     return f"{header}\n\n" + "\n".join(lines) + f"\n\nСтраница {page + 1} из {total_pages}."
 
 
-def _cover_trigger(cover_url: Optional[str]) -> str:
-    if not cover_url:
-        return ""
-    return f'<a href="{cover_url}">&#8205;</a>'
-
-
-def _book_card_text(b, note: Optional[str] = None) -> str:
+def _book_card_text(b) -> str:
     lines = []
     cover_url = getattr(b, "cover_url", None)
     if cover_url:
@@ -79,25 +63,10 @@ def _book_card_text(b, note: Optional[str] = None) -> str:
     lines.append(f"📖 <b>{b.title}</b>")
     lines.append(f"👤 {b.author}")
 
-    series_name = getattr(b, "series_name", None)
-    if series_name:
-        part = getattr(b, "series_part", None)
-        total = getattr(b, "series_total", None)
-        part_str = f" (часть {part} из {total})" if part and total else (f" (часть {part})" if part else "")
-        lines.append(f"🔗 Цикл: {series_name}{part_str}")
-
-    lines.append(services.format_rating(getattr(b, "average_rating", None), getattr(b, "ratings_count", None)))
-    lines.append(services.format_availability(b))
-    lines.append(services.format_purchase(b))
-    if note:
-        lines.append(f"ℹ️ {note}")
-
     description = getattr(b, "description", None)
     if description:
         short = description if len(description) <= 700 else description[:700].rstrip() + "…"
         lines.append(f"\n📝 {short}")
-    else:
-        lines.append("\n📝 Описание не найдено.")
 
     return "\n".join(lines)
 
@@ -168,13 +137,11 @@ async def _finalize_add_book(bot, chat_id: int, user: db.User, chosen: services.
         description=chosen.description,
     )
 
-    cover_html = _cover_trigger(book.cover_url)
-    text = f"{cover_html}✅ Нашёл и добавил: «{book.title}» — {book.author}\n"
-    text += "\n" + services.format_rating(book.average_rating, book.ratings_count)
-    text += "\n" + services.format_availability(book)
-    text += "\n" + services.format_purchase(book)
+    cover_url = getattr(book, "cover_url", None)
+    cover_html = f'<a href="{cover_url}">&#8205;</a>' if cover_url else ""
+    text = f"{cover_html}✅ Нашёл и добавил: «{book.title}» — {book.author}"
 
-    sent = await bot.send_message(chat_id, text, reply_markup=library_card_kb(book.id, buy_link=book.buy_link))
+    sent = await bot.send_message(chat_id, text, reply_markup=library_card_kb(book.id))
     track(chat_id, sent.message_id)
     return sent
 
@@ -218,11 +185,8 @@ async def addpick_cb(callback: CallbackQuery, state: FSMContext) -> None:
             await callback.message.edit_text("Что-то пошло не так, попробуй ещё раз.")
             return
         chosen = results[idx]
-        await callback.message.edit_text("«{chosen.title}» — проверяю информацию… ⏳")
-        context = await _get_context(chosen.title, chosen.author)
-        merged = _merge_book(chosen, context)
-        note = context.market_note or context.series_note
-        await callback.message.edit_text(_book_card_text(merged, note), reply_markup=search_card_kb(idx, "addpick"))
+        merged = _merge_book(chosen, None)
+        await callback.message.edit_text(_book_card_text(merged), reply_markup=search_card_kb(idx, "addpick"))
         return
 
     if action == "add":
@@ -277,15 +241,10 @@ async def check_book_query(message: Message, state: FSMContext) -> None:
         return
 
     chosen = results[0]
-    context = await _get_context(chosen.title, chosen.author)
 
-    cover_html = _cover_trigger(chosen.cover_url)
-    text = f"{cover_html}❌ У тебя её нет: «{chosen.title}» — {chosen.author}\n"
-    text += "\n" + services.format_rating(context.average_rating, context.ratings_count)
-    text += "\n" + services.format_availability(context)
-    text += "\n" + services.format_purchase(context)
-    if context.market_note:
-        text += f"\n\nℹ️ {context.market_note}"
+    cover_url = getattr(chosen, "cover_url", None)
+    cover_html = f'<a href="{cover_url}">&#8205;</a>' if cover_url else ""
+    text = f"{cover_html}❌ У тебя её нет: «{chosen.title}» — {chosen.author}"
 
     sent = await message.answer(text)
     track(message.chat.id, sent.message_id)
@@ -367,7 +326,7 @@ async def lib_cb(callback: CallbackQuery) -> None:
         star = "⭐ В избранном\n\n" if book.is_favorite else ""
         await callback.message.edit_text(
             star + _book_card_text(book),
-            reply_markup=library_card_kb(book.id, buy_link=book.buy_link),
+            reply_markup=library_card_kb(book.id),
         )
         return
 
@@ -382,7 +341,7 @@ async def toggle_fav(callback: CallbackQuery) -> None:
         try:
             await callback.message.edit_text(
                 star + _book_card_text(book),
-                reply_markup=library_card_kb(book.id, buy_link=book.buy_link),
+                reply_markup=library_card_kb(book.id),
             )
         except Exception:
             pass
