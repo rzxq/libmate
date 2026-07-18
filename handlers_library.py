@@ -58,20 +58,16 @@ def _book_card_text(b) -> str:
     return "\n".join(lines)
 
 
-async def _send_with_cover(bot, chat_id: int, text: str, cover_url: Optional[str] = None, reply_markup=None) -> list[Message]:
-    msgs = []
+async def _send_with_cover(bot, chat_id: int, text: str, cover_url: Optional[str] = None, reply_markup=None) -> Message:
     if cover_url:
         try:
             if len(text) <= 1024:
-                msgs.append(await bot.send_photo(chat_id, photo=cover_url, caption=text, reply_markup=reply_markup))
-            else:
-                msgs.append(await bot.send_photo(chat_id, photo=cover_url))
-                msgs.append(await bot.send_message(chat_id, text, reply_markup=reply_markup))
+                return await bot.send_photo(chat_id, photo=cover_url, caption=text, reply_markup=reply_markup)
+            await bot.send_photo(chat_id, photo=cover_url)
+            return await bot.send_message(chat_id, text, reply_markup=reply_markup)
         except Exception:
-            msgs.append(await bot.send_message(chat_id, text, reply_markup=reply_markup))
-    else:
-        msgs.append(await bot.send_message(chat_id, text, reply_markup=reply_markup))
-    return msgs
+            pass
+    return await bot.send_message(chat_id, text, reply_markup=reply_markup)
 
 
 @router.message(Command("start"))
@@ -139,10 +135,9 @@ async def _finalize_add_book(bot, chat_id: int, user: db.User, chosen: services.
     )
 
     text = f"✅ Нашёл и добавил: «{book.title}» — {book.author}"
-    msgs = await _send_with_cover(bot, chat_id, text, book.cover_url, reply_markup=library_card_kb(book.id))
-    for m in msgs:
-        track(chat_id, m.message_id)
-    return msgs[-1]
+    sent = await _send_with_cover(bot, chat_id, text, book.cover_url, reply_markup=library_card_kb(book.id))
+    track(chat_id, sent.message_id)
+    return sent
 
 
 @router.callback_query(AddBook.waiting_choice, F.data.startswith("addpick:"))
@@ -173,9 +168,11 @@ async def addpick_cb(callback: CallbackQuery, state: FSMContext) -> None:
         return
 
     if action == "back":
+        await callback.message.delete()
         text = _list_text(results, page, "Нашёл несколько вариантов, выбери нужный:")
         kb = paginated_list_kb(len(results), page, "addpick")
-        await callback.message.edit_text(text, reply_markup=kb)
+        sent = await callback.bot.send_message(callback.message.chat.id, text, reply_markup=kb)
+        track(callback.message.chat.id, sent.message_id)
         return
 
     if action == "show":
@@ -186,9 +183,8 @@ async def addpick_cb(callback: CallbackQuery, state: FSMContext) -> None:
         chosen = results[idx]
         text = _book_card_text(chosen)
         await callback.message.delete()
-        msgs = await _send_with_cover(callback.bot, callback.message.chat.id, text, chosen.cover_url, reply_markup=search_card_kb(idx, "addpick"))
-        for m in msgs:
-            track(callback.message.chat.id, m.message_id)
+        sent = await _send_with_cover(callback.bot, callback.message.chat.id, text, chosen.cover_url, reply_markup=search_card_kb(idx, "addpick"))
+        track(callback.message.chat.id, sent.message_id)
         return
 
     if action == "add":
@@ -243,11 +239,9 @@ async def check_book_query(message: Message, state: FSMContext) -> None:
         return
 
     chosen = results[0]
-
     text = f"❌ У тебя её нет: «{chosen.title}» — {chosen.author}"
-    msgs = await _send_with_cover(message.bot, message.chat.id, text, chosen.cover_url)
-    for m in msgs:
-        track(message.chat.id, m.message_id)
+    sent = await _send_with_cover(message.bot, message.chat.id, text, chosen.cover_url)
+    track(message.chat.id, sent.message_id)
 
 
 @router.message(F.text == "📚 Моя библиотека")
@@ -312,9 +306,11 @@ async def lib_cb(callback: CallbackQuery) -> None:
         return
 
     if action == "back":
+        await callback.message.delete()
         text = _list_text(books, data["page"], header)
         kb = paginated_list_kb(len(books), data["page"], "lib")
-        await callback.message.edit_text(text, reply_markup=kb)
+        sent = await callback.bot.send_message(callback.message.chat.id, text, reply_markup=kb)
+        track(callback.message.chat.id, sent.message_id)
         return
 
     if action == "show":
@@ -326,9 +322,8 @@ async def lib_cb(callback: CallbackQuery) -> None:
         star = "⭐ В избранном\n\n" if book.is_favorite else ""
         text = star + _book_card_text(book)
         await callback.message.delete()
-        msgs = await _send_with_cover(callback.bot, callback.message.chat.id, text, book.cover_url, reply_markup=library_card_kb(book.id))
-        for m in msgs:
-            track(callback.message.chat.id, m.message_id)
+        sent = await _send_with_cover(callback.bot, callback.message.chat.id, text, book.cover_url, reply_markup=library_card_kb(book.id))
+        track(callback.message.chat.id, sent.message_id)
         return
 
 
@@ -342,9 +337,8 @@ async def toggle_fav(callback: CallbackQuery) -> None:
         text = star + _book_card_text(book)
         try:
             await callback.message.delete()
-            msgs = await _send_with_cover(callback.bot, callback.message.chat.id, text, book.cover_url, reply_markup=library_card_kb(book.id))
-            for m in msgs:
-                track(callback.message.chat.id, m.message_id)
+            sent = await _send_with_cover(callback.bot, callback.message.chat.id, text, book.cover_url, reply_markup=library_card_kb(book.id))
+            track(callback.message.chat.id, sent.message_id)
         except Exception:
             pass
 
