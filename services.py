@@ -169,7 +169,7 @@ async def ai_find_book(query: str) -> Optional[BookInfo]:
             system=system_prompt,
             messages=[{"role": "user", "content": f"Найди книгу: {query}"}],
         )
-    except Exception:
+    except Exception as e:
         logger.exception("Anthropic API упал в ai_find_book для запроса %r", query)
         return None
 
@@ -226,9 +226,9 @@ async def check_book_context(title: str, author: str) -> BookContext:
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
         )
-    except Exception:
+    except Exception as e:
         logger.exception("Anthropic API упал в check_book_context для %r / %r", title, author)
-        return BookContext(market_note="Не удалось проверить книгу (ошибка ИИ)")
+        return BookContext(market_note=f"Ошибка ИИ: {e}")
 
     text_parts = [block.text for block in message.content if block.type == "text"]
     raw = "\n".join(text_parts).strip().replace("```json", "").replace("```", "").strip()
