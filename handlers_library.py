@@ -70,6 +70,17 @@ async def _send_with_cover(bot, chat_id: int, text: str, cover_url: Optional[str
     return await bot.send_message(chat_id, text, reply_markup=reply_markup)
 
 
+async def _delete_and_send(callback: CallbackQuery, text: str, reply_markup=None) -> Message:
+    """Удаляет текущее сообщение (даже фото) и отправляет новый текст."""
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    sent = await callback.bot.send_message(callback.message.chat.id, text, reply_markup=reply_markup)
+    track(callback.message.chat.id, sent.message_id)
+    return sent
+
+
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
@@ -150,11 +161,11 @@ async def addpick_cb(callback: CallbackQuery, state: FSMContext) -> None:
     if action == "cancel":
         await state.clear()
         _search_cache.pop(user_id, None)
-        await callback.message.edit_text("Добавление отменено.")
+        await _delete_and_send(callback, "Добавление отменено.")
         return
 
     if not data:
-        await callback.message.edit_text("Список устарел, начни заново через «➕ Добавить книгу».")
+        await _delete_and_send(callback, "Список устарел, начни заново через «➕ Добавить книгу».")
         await state.clear()
         return
 
@@ -178,7 +189,7 @@ async def addpick_cb(callback: CallbackQuery, state: FSMContext) -> None:
     if action == "show":
         idx = int(rest[0])
         if idx >= len(results):
-            await callback.message.edit_text("Что-то пошло не так, попробуй ещё раз.")
+            await _delete_and_send(callback, "Что-то пошло не так, попробуй ещё раз.")
             return
         chosen = results[idx]
         text = _book_card_text(chosen)
@@ -190,11 +201,11 @@ async def addpick_cb(callback: CallbackQuery, state: FSMContext) -> None:
     if action == "add":
         idx = int(rest[0])
         if idx >= len(results):
-            await callback.message.edit_text("Что-то пошло не так, попробуй ещё раз.")
+            await _delete_and_send(callback, "Что-то пошло не так, попробуй ещё раз.")
             return
         chosen = results[idx]
         user = await db.get_or_create_user(callback.from_user.id, callback.from_user.username)
-        await callback.message.edit_text(f"Добавляю «{chosen.title}»… ⏳")
+        await _delete_and_send(callback, f"Добавляю «{chosen.title}»… ⏳")
         await _finalize_add_book(callback.bot, callback.message.chat.id, user, chosen)
         await state.clear()
         _search_cache.pop(user_id, None)
@@ -289,11 +300,11 @@ async def lib_cb(callback: CallbackQuery) -> None:
 
     if action == "cancel":
         _library_cache.pop(user_id, None)
-        await callback.message.edit_text("Список закрыт. Открой «📚 Моя библиотека» или «⭐ Избранное» заново.")
+        await _delete_and_send(callback, "Список закрыт. Открой «📚 Моя библиотека» или «⭐ Избранное» заново.")
         return
 
     if not data:
-        await callback.message.edit_text("Список устарел, открой «📚 Моя библиотека» заново.")
+        await _delete_and_send(callback, "Список устарел, открой «📚 Моя библиотека» заново.")
         return
 
     books, header = data["books"], data["header"]
@@ -316,7 +327,7 @@ async def lib_cb(callback: CallbackQuery) -> None:
     if action == "show":
         idx = int(rest[0])
         if idx >= len(books):
-            await callback.message.edit_text("Что-то пошло не так, открой список заново.")
+            await _delete_and_send(callback, "Что-то пошло не так, открой список заново.")
             return
         book = books[idx]
         star = "⭐ В избранном\n\n" if book.is_favorite else ""
@@ -349,4 +360,4 @@ async def delete_book_cb(callback: CallbackQuery) -> None:
     ok = await db.delete_book(book_id)
     await callback.answer("Удалено" if ok else "Не найдено")
     if ok:
-        await callback.message.edit_text("🗑 Книга удалена из библиотеки.", reply_markup=None)
+        await _delete_and_send(callback, "🗑 Книга удалена из библиотеки.")
