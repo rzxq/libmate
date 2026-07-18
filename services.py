@@ -126,9 +126,9 @@ def _parse_volume(item: dict) -> BookInfo:
     return BookInfo(title=title, author=authors, cover_url=cover, description=description)
 
 
-async def _groq_request(system_prompt: str, user_prompt: str, max_tokens: int = 1200) -> Optional[str]:
+async def _groq_request(system_prompt: str, user_prompt: str, max_tokens: int = 1200) -> tuple[Optional[str], Optional[str]]:
     if not GROQ_API_KEY:
-        return None
+        return None, "GROQ_API_KEY не задан в переменных окружения"
 
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -147,12 +147,17 @@ async def _groq_request(system_prompt: str, user_prompt: str, max_tokens: int = 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(GROQ_API_URL, headers=headers, json=body)
+            if resp.status_code == 401:
+                return None, "Groq: неверный API ключ"
+            if resp.status_code == 403:
+                return None, "Groq: доступ заблокирован (возможно, регион)"
             resp.raise_for_status()
             data = resp.json()
-            return data["choices"][0]["message"]["content"]
+            content = data["choices"][0]["message"]["content"]
+            return content, None
     except Exception as e:
         logger.exception("Groq API ошибка")
-        return None
+        return None, f"Groq ошибка: {e}"
 
 
 async def search_book(query: str, prefer_russian: bool = True) -> list[BookInfo]:
@@ -181,7 +186,10 @@ async def ai_find_book(query: str) -> Optional[BookInfo]:
     )
     user_prompt = f"Найди книгу: {query}"
 
-    raw = await _groq_request(system_prompt, user_prompt, max_tokens=500)
+    raw, error = await _groq_request(system_prompt, user_prompt, max_tokens=500)
+    if error:
+        logger.warning("Groq в ai_find_book: %s", error)
+        return None
     if not raw:
         return None
 
@@ -225,7 +233,9 @@ async def check_book_context(title: str, author: str) -> BookContext:
     )
     user_prompt = f'Книга: "{title}". Автор: {author}.'
 
-    raw = await _groq_request(system_prompt, user_prompt, max_tokens=1200)
+    raw, error = await _groq_request(system_prompt, user_prompt, max_tokens=1200)
+    if error:
+        return BookContext(market_note=error)
     if not raw:
         return BookContext(market_note="Не удалось получить ответ от Groq")
 
