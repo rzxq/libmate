@@ -151,6 +151,12 @@ async def _groq_request(system_prompt: str, user_prompt: str, max_tokens: int = 
                 return None, "Groq: неверный API ключ"
             if resp.status_code == 403:
                 return None, "Groq: доступ заблокирован (возможно, регион)"
+            if resp.status_code >= 400:
+                try:
+                    detail = resp.json()
+                except Exception:
+                    detail = resp.text
+                return None, f"Groq {resp.status_code}: {detail}"
             resp.raise_for_status()
             data = resp.json()
             content = data["choices"][0]["message"]["content"]
