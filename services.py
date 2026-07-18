@@ -57,9 +57,12 @@ def _parse_volume(item: dict) -> BookInfo:
     info = item.get("volumeInfo", {})
     title = info.get("title", "Без названия")
     authors = ", ".join(info.get("authors", ["Неизвестен"]))
-    cover = info.get("imageLinks", {}).get("thumbnail")
+
+    images = info.get("imageLinks", {})
+    cover = images.get("medium") or images.get("small") or images.get("thumbnail") or images.get("smallThumbnail")
     if cover:
-        cover = cover.replace("http://", "https://").replace("zoom=1", "zoom=6")
+        cover = cover.replace("http://", "https://")
+
     description = info.get("description")
     return BookInfo(title=title, author=authors, cover_url=cover, description=description)
 
